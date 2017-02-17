@@ -1,83 +1,111 @@
 package tests
 
 import (
+	"fmt"
 	"github.com/bozaro/tech-db-forum/generated/client"
 	"github.com/bozaro/tech-db-forum/generated/models"
 	"log"
 	"math/rand"
 	"net/url"
+	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
-func FillUsers(c *client.Forum, parallel int, count int) []*models.User {
-	results := make(chan *models.User, 64)
-	var need int32 = int32(count)
+func ParallelFactory(output interface{}, parallel int, message string, worker func(index int) interface{}) {
+	log.Printf("%s - begin", message)
+	start := time.Now()
+	slice := reflect.ValueOf(output).Elem()
+	if slice.Kind() != reflect.Slice {
+		panic("Invalid output object type: expected slice")
+	}
+
+	results := make(chan []interface{}, parallel)
+	var count int32 = int32(slice.Len())
+	var index int32 = 0
 
 	// spawn four worker goroutines
 	var wg sync.WaitGroup
 	for i := 0; i < parallel; i++ {
 		wg.Add(1)
 		go func() {
-			for atomic.AddInt32(&need, -1) >= 0 {
-				results <- CreateUser(c, nil)
+			batch := make([]interface{}, count)
+			size := 0
+			for true {
+				idx := atomic.AddInt32(&index, 1) - 1
+				if idx >= count {
+					break
+				}
+				batch[size] = worker(int(idx))
+				size++
 			}
+			results <- batch[0:size]
 			wg.Done()
 		}()
 	}
+	// wait for the workers to finish
+	wg.Wait()
 
 	// get result
-	result := make([]*models.User, count)
-	for i := 0; i < count; i++ {
-		result[i] = <-results
+	var size int32 = 0
+	for i := 0; i < parallel; i++ {
+		select {
+		case batch := <-results:
+			for _, item := range batch {
+				slice.Index(int(size)).Set(reflect.ValueOf(item))
+				size++
+			}
+		default:
+			break
+		}
 	}
 	close(results)
 
-	// wait for the workers to finish
-	wg.Wait()
-	return result
+	if size != count {
+		panic(fmt.Sprintf("Unexpected elements count: %d (expected: %d)", size, count))
+	}
+	elapsed := time.Since(start)
+	log.Printf("%s - done: %s", message, elapsed)
 }
 
 func Fill(url *url.URL) int {
 
+	start := time.Now()
+	// Очистка
 	transport := CreateTransport(url)
 	c := client.New(transport, nil)
 	_, err := c.Operations.Clear(nil)
 	CheckNil(err)
 
-	log.Println("Creating users (single thread)")
-	users := []*models.User{}
-	for i := 0; i < 10000; i++ {
-		users = append(users, CreateUser(c, nil))
-	}
-	log.Println("Creating users (multiple threads)")
-	users = FillUsers(c, 8, 10000)
-
-	log.Println("Creating forums")
-	forums := []*models.Forum{}
-	for i := 0; i < 20; i++ {
-		forums = append(forums, CreateForum(c, nil, users[rand.Intn(len(users))]))
-	}
-
-	log.Println("Creating threads")
-	threads := []*models.Thread{}
-	for i := 0; i < 1000; i++ {
+	// Создание пользователей
+	users := make([]*models.User, 10000)
+	ParallelFactory(&users, 8, "Creating users (multiple threads)", func(index int) interface{} {
+		return CreateUser(c, nil)
+	})
+	// Создание форумов
+	forums := make([]*models.Forum, 25)
+	ParallelFactory(&forums, 8, "Creating forums (multiple threads)", func(index int) interface{} {
+		return CreateForum(c, nil, users[rand.Intn(len(users))])
+	})
+	// Создание веток обсуждения
+	threads := make([]*models.Thread, 5000)
+	ParallelFactory(&threads, 8, "Creating threads (multiple threads)", func(index int) interface{} {
 		thread := RandomThread()
 		if rand.Intn(100) >= 5 {
 			thread.Slug = ""
 		}
-		threads = append(threads, CreateThread(c, thread, forums[rand.Intn(len(forums))], users[rand.Intn(len(users))]))
-	}
-
-	log.Println("Creating posts")
-	posts := []*models.Post{}
-	for i := 0; i < 10000; i++ {
+		return CreateThread(c, thread, forums[rand.Intn(len(forums))], users[rand.Intn(len(users))])
+	})
+	// Создание постов
+	posts := make([]*models.Post, 1000000)
+	ParallelFactory(&posts, 8, "Creating posts (multiple threads)", func(index int) interface{} {
 		post := RandomPost()
 		post.Author = users[rand.Intn(len(users))].Nickname
 		post.Thread = threads[rand.Intn(len(threads))].ID
-		posts = append(posts, CreatePost(c, post, nil))
-	}
-
-	log.Println("Done")
+		return CreatePost(c, post, nil)
+	})
+	elapsed := time.Since(start)
+	log.Printf("Done: %s", elapsed)
 	return 0
 }
