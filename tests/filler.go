@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/bozaro/tech-db-forum/generated/client"
 	"github.com/bozaro/tech-db-forum/generated/models"
-	"log"
 	"math/rand"
 	"net/url"
 	"reflect"
@@ -14,7 +13,7 @@ import (
 )
 
 func ParallelFactory(output interface{}, parallel int, message string, worker func(index int) interface{}) {
-	log.Printf("%s - begin", message)
+	log.Infof("%s - begin", message)
 	start := time.Now()
 	slice := reflect.ValueOf(output).Elem()
 	if slice.Kind() != reflect.Slice {
@@ -66,7 +65,7 @@ func ParallelFactory(output interface{}, parallel int, message string, worker fu
 		panic(fmt.Sprintf("Unexpected elements count: %d (expected: %d)", size, count))
 	}
 	elapsed := time.Since(start)
-	log.Printf("%s - done: %s", message, elapsed)
+	log.Infof("%s - done: %s", message, elapsed)
 }
 
 func Fill(url *url.URL) int {
@@ -106,6 +105,6 @@ func Fill(url *url.URL) int {
 		return CreatePost(c, post, nil)
 	})
 	elapsed := time.Since(start)
-	log.Printf("Done: %s", elapsed)
+	log.Infof("Done: %s", elapsed)
 	return 0
 }
